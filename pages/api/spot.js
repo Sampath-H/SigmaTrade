@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 // pages/api/spot.js
 const NSE_INDEX_MAP = {
   'NSE_INDEX|Nifty 50':           'NIFTY 50',
@@ -9,17 +8,12 @@ const NSE_INDEX_MAP = {
   'BSE_INDEX|BANKEX':             'BANKEX',
 };
 
-=======
->>>>>>> 7dc49498fac3f7d626dd538895dd11d21fa5fdca
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
   const token = req.headers.authorization?.replace('Bearer ', '');
   const { instrument_key } = req.query;
 
-<<<<<<< HEAD
   // Upstox first
-=======
->>>>>>> 7dc49498fac3f7d626dd538895dd11d21fa5fdca
   if (token && token !== 'MOCK_TOKEN') {
     try {
       const r = await fetch(
@@ -35,7 +29,6 @@ export default async function handler(req, res) {
     } catch {}
   }
 
-<<<<<<< HEAD
   // NSE allIndices fallback (works for both NSE and BSE indices)
   const nse_name = NSE_INDEX_MAP[instrument_key];
   if (nse_name) {
@@ -57,28 +50,6 @@ export default async function handler(req, res) {
       }
     } catch {}
   }
-=======
-  // NSE fallback
-  const NSE_MAP = {
-    'NSE_INDEX|Nifty 50': 'NIFTY 50', 'NSE_INDEX|Nifty Bank': 'NIFTY BANK',
-    'NSE_INDEX|Nifty Fin Service': 'NIFTY FIN SERVICE',
-    'NSE_INDEX|Nifty MidCap Select': 'NIFTY MIDCAP SELECT', 'BSE_INDEX|SENSEX': 'SENSEX',
-  };
-  try {
-    const pf = await fetch('https://www.nseindia.com', {
-      headers: { 'User-Agent': 'Mozilla/5.0 Chrome/120.0.0.0' }
-    });
-    const cookies = pf.headers.get('set-cookie') || '';
-    const r = await fetch('https://www.nseindia.com/api/allIndices', {
-      headers: { 'User-Agent': 'Mozilla/5.0 Chrome/120.0.0.0', Accept: 'application/json',
-        Referer: 'https://www.nseindia.com/', Cookie: cookies }
-    });
-    const d = await r.json();
-    const nse_name = NSE_MAP[instrument_key] || '';
-    const found = (d.data || []).find(i => i.index?.toUpperCase().includes(nse_name.toUpperCase()));
-    if (found?.last) return res.json({ source: 'nse', ltp: found.last });
-  } catch {}
->>>>>>> 7dc49498fac3f7d626dd538895dd11d21fa5fdca
 
   return res.status(502).json({ error: 'Could not fetch spot' });
 }
