@@ -155,9 +155,12 @@ export default function OptionChain() {
         parsed = p.rows;
         if (p.spot && !newSpot) setSpot(p.spot);
         if (p.expiries.length && !expiries.length) { setExpiries(p.expiries); if (!expiry) setExpiry(p.expiries[0]); }
+<<<<<<< HEAD
       } else if (cd.source === 'unavailable') {
         // BSE indices - option chain not available on NSE API
         setSource('bse_unavailable');
+=======
+>>>>>>> 7dc49498fac3f7d626dd538895dd11d21fa5fdca
       }
 
       parsed.sort((a,b) => a.strike-b.strike);
@@ -212,6 +215,7 @@ export default function OptionChain() {
 
   function startPoll() {
     clearInterval(pollRef.current);
+<<<<<<< HEAD
     // BSE indices not supported via NSE polling
     const BSE_ONLY = ['SENSEX','BANKEX'];
     if (BSE_ONLY.includes(indexKey)) {
@@ -220,6 +224,10 @@ export default function OptionChain() {
     }
     setWsStatus('NSE live (3s)');
     const sym = {NIFTY:'NIFTY',BANKNIFTY:'BANKNIFTY',FINNIFTY:'FINNIFTY',MIDCPNIFTY:'MIDCPNIFTY'}[indexKey]||'NIFTY';
+=======
+    setWsStatus('NSE live (3s)');
+    const sym = {NIFTY:'NIFTY',BANKNIFTY:'BANKNIFTY',FINNIFTY:'FINNIFTY',MIDCPNIFTY:'MIDCPNIFTY',SENSEX:'SENSEX'}[indexKey]||'NIFTY';
+>>>>>>> 7dc49498fac3f7d626dd538895dd11d21fa5fdca
     const poll = async () => {
       try {
         const r = await fetch(`/api/nse-poll?symbol=${sym}`);
@@ -389,6 +397,7 @@ export default function OptionChain() {
           {loading&&<div style={{padding:30,textAlign:'center',color:'var(--text3)'}}>
             <div className="loader" style={{margin:'0 auto 8px'}}/> Loading...
           </div>}
+<<<<<<< HEAD
           {!loading&&rows.length===0&&(
             <div style={{padding:40,textAlign:'center'}}>
               {source==='bse_unavailable' ? (
@@ -410,6 +419,9 @@ export default function OptionChain() {
               )}
             </div>
           )}
+=======
+          {!loading&&rows.length===0&&<div style={{padding:30,textAlign:'center',color:'var(--text3)'}}>No data available</div>}
+>>>>>>> 7dc49498fac3f7d626dd538895dd11d21fa5fdca
           {!loading&&rows.length>0&&(
             <table style={{width:'100%',borderCollapse:'collapse',minWidth:860}}>
               <thead>
