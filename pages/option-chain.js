@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import Layout from '../components/Layout';
 import { useRouter } from 'next/router';
-import { decodeFeedResponse, extractTickUpdate } from './proto-decode';
+import { decodeFeedResponse, extractTickUpdate } from '../lib/proto-decode';
 
 const INDEX_CONFIG = {
   NIFTY:      { instrument_key: 'NSE_INDEX|Nifty 50',           label: 'Nifty 50',     lot: 75,  gap: 50  },
