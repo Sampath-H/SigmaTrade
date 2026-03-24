@@ -1,48 +1,56 @@
 // pages/api/expiry.js
-// Fixed: includes today if it's expiry day, correct weekdays per index
+// Ported from Python algo_trading.py api_get_expiry_dates + NSE fallback
 
-const NSE_SYMBOL_MAP = {
-  'NSE_INDEX|Nifty 50':            'NIFTY',       // weekly: Thursday (4)
-  'NSE_INDEX|Nifty Bank':          'BANKNIFTY',   // weekly: Wednesday (3)
-  'NSE_INDEX|Nifty Fin Service':   'FINNIFTY',    // weekly: Tuesday (2)
-  'NSE_INDEX|Nifty MidCap Select': 'MIDCPNIFTY',  // weekly: Monday (1)
+const NSE_SYMBOL = {
+  'NSE_INDEX|Nifty 50':            'NIFTY',
+  'NSE_INDEX|Nifty Bank':          'BANKNIFTY',
+  'NSE_INDEX|Nifty Fin Service':   'FINNIFTY',
+  'NSE_INDEX|Nifty MidCap Select': 'MIDCPNIFTY',
 };
 
-// Upstox weekly expiry weekdays (JS: 0=Sun, 1=Mon, ..., 6=Sat)
+// JS weekday numbers: 0=Sun,1=Mon,2=Tue,3=Wed,4=Thu,5=Fri,6=Sat
 const EXPIRY_WEEKDAY = {
   'NSE_INDEX|Nifty 50':            4, // Thursday
   'NSE_INDEX|Nifty Bank':          3, // Wednesday
   'NSE_INDEX|Nifty Fin Service':   2, // Tuesday
   'NSE_INDEX|Nifty MidCap Select': 1, // Monday
-  'BSE_INDEX|SENSEX':              4, // Thursday (BSE)
-  'BSE_INDEX|BANKEX':              4, // Thursday (BSE)
+  'BSE_INDEX|SENSEX':              4, // Thursday
+  'BSE_INDEX|BANKEX':              4, // Thursday
 };
+
+function fmtDate(d) {
+  try {
+    const months = { Jan:'01',Feb:'02',Mar:'03',Apr:'04',May:'05',Jun:'06',
+                     Jul:'07',Aug:'08',Sep:'09',Oct:'10',Nov:'11',Dec:'12' };
+    const [day, mon, year] = d.split('-');
+    if (months[mon]) return `${year}-${months[mon]}-${day.padStart(2,'0')}`;
+    return new Date(d).toISOString().split('T')[0];
+  } catch { return d; }
+}
 
 function generateExpiries(instrument_key) {
   const weekday = EXPIRY_WEEKDAY[instrument_key] ?? 4;
   const expiries = [];
-  const d = new Date();
-  // Set to IST midnight to avoid timezone issues
-  d.setHours(0, 0, 0, 0);
+  // Use IST date
+  const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+  now.setHours(0, 0, 0, 0);
 
-  // Check if TODAY is an expiry day — include it
-  if (d.getDay() === weekday) {
-    expiries.push(d.toISOString().split('T')[0]);
+  const cur = new Date(now);
+  // Include today if it's expiry weekday
+  if (cur.getDay() === weekday) {
+    expiries.push(cur.toISOString().split('T')[0]);
   }
 
-  // Generate next 8 weekly expiries
-  const start = new Date(d);
-  start.setDate(start.getDate() + 1); // start from tomorrow
+  // Generate next 8 weekly expiries starting from tomorrow
+  const next = new Date(now);
+  next.setDate(next.getDate() + 1);
   while (expiries.length < 8) {
-    if (start.getDay() === weekday) {
-      expiries.push(start.toISOString().split('T')[0]);
+    if (next.getDay() === weekday) {
+      expiries.push(next.toISOString().split('T')[0]);
     }
-    start.setDate(start.getDate() + 1);
+    next.setDate(next.getDate() + 1);
   }
-
-  // Also add monthly expiry (last Thursday of the month) if not already included
-  // This gives at least 4 weekly + monthly options
-  return expiries.slice(0, 10);
+  return expiries;
 }
 
 export default async function handler(req, res) {
@@ -50,7 +58,7 @@ export default async function handler(req, res) {
   const token = req.headers.authorization?.replace('Bearer ', '');
   const { instrument_key } = req.query;
 
-  // ── 1. Upstox (most accurate — real exchange expiries) ────────────────
+  // ── 1. Upstox (same as Python api_get_expiry_dates) ───────────────────
   if (token && token !== 'MOCK_TOKEN') {
     try {
       const r = await fetch(
@@ -59,48 +67,52 @@ export default async function handler(req, res) {
       );
       if (r.ok) {
         const d = await r.json();
-        if (d.data?.length) {
-          // Sort expiries ascending
-          const sorted = [...d.data].sort((a, b) => new Date(a) - new Date(b));
-          return res.json({ source: 'upstox', expiries: sorted });
+        const expiries = (d.data || []).sort((a, b) => new Date(a) - new Date(b));
+        if (expiries.length) {
+          console.log('Upstox expiries:', expiries.slice(0,4));
+          return res.json({ source: 'upstox', expiries });
         }
       }
-    } catch {}
+    } catch (e) {
+      console.error('Upstox expiry error:', e.message);
+    }
   }
 
   // ── 2. NSE fallback ───────────────────────────────────────────────────
-  const sym = NSE_SYMBOL_MAP[instrument_key];
+  const sym = NSE_SYMBOL[instrument_key];
   if (sym) {
     try {
+      const headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+        'Referer': 'https://www.nseindia.com/',
+      };
       const home = await fetch('https://www.nseindia.com', {
-        headers: { 'User-Agent': 'Mozilla/5.0 Chrome/124.0.0.0', Accept: 'text/html' }
+        headers: { ...headers, Accept: 'text/html' }
       });
       const cookies = home.headers.get('set-cookie') || '';
       const r = await fetch(
         `https://www.nseindia.com/api/option-chain-indices?symbol=${sym}`,
-        {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 Chrome/124.0.0.0',
-            Accept: 'application/json',
-            Referer: 'https://www.nseindia.com/option-chain',
-            Cookie: cookies,
-          }
-        }
+        { headers: { ...headers, Cookie: cookies } }
       );
       if (r.ok) {
         const d = await r.json();
         const expiries = (d.records?.expiryDates || [])
-          .map(e => {
-            try { return new Date(e).toISOString().split('T')[0]; } catch { return e; }
-          })
+          .map(fmtDate)
           .filter(Boolean)
           .sort((a, b) => new Date(a) - new Date(b));
-        if (expiries.length) return res.json({ source: 'nse', expiries });
+        if (expiries.length) {
+          console.log('NSE expiries:', expiries.slice(0,4));
+          return res.json({ source: 'nse', expiries });
+        }
       }
-    } catch {}
+    } catch (e) {
+      console.error('NSE expiry error:', e.message);
+    }
   }
 
-  // ── 3. Generated fallback (includes today if expiry day) ──────────────
+  // ── 3. Generated (always includes today if expiry day) ────────────────
   const expiries = generateExpiries(instrument_key);
+  console.log('Generated expiries:', expiries.slice(0,4));
   return res.json({ source: 'generated', expiries });
 }

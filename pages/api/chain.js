@@ -1,117 +1,139 @@
 // pages/api/chain.js
-// Fixed: NSE cookie handling + BSE support + Yahoo Finance fallback
+// Ported directly from Python algo_trading.py nse_parse_option_chain + api_get_option_chain
 
-const NSE_SYMBOL_MAP = {
+const NSE_SYMBOL = {
   'NSE_INDEX|Nifty 50':            'NIFTY',
   'NSE_INDEX|Nifty Bank':          'BANKNIFTY',
   'NSE_INDEX|Nifty Fin Service':   'FINNIFTY',
   'NSE_INDEX|Nifty MidCap Select': 'MIDCPNIFTY',
 };
 
-const BSE_INDICES = ['BSE_INDEX|SENSEX', 'BSE_INDEX|BANKEX'];
-
-// Yahoo Finance symbols for option chain fallback
-const YAHOO_OC_SYMBOL = {
-  'NSE_INDEX|Nifty 50':            'NIFTY',
-  'NSE_INDEX|Nifty Bank':          'BANKNIFTY',
-  'NSE_INDEX|Nifty Fin Service':   'FINNIFTY',
-  'NSE_INDEX|Nifty MidCap Select': 'MIDCPNIFTY',
+const LOT_SIZE = {
+  'NSE_INDEX|Nifty 50':            75,
+  'NSE_INDEX|Nifty Bank':          30,
+  'NSE_INDEX|Nifty Fin Service':   65,
+  'NSE_INDEX|Nifty MidCap Select': 120,
+  'BSE_INDEX|SENSEX':              20,
+  'BSE_INDEX|BANKEX':              30,
 };
 
-async function getNSEData(sym) {
+function _s(d, k, dv = 0) {
+  const v = d?.[k];
+  return (v !== null && v !== undefined) ? parseFloat(v) || dv : dv;
+}
+
+function fmtDate(d) {
+  // Convert "24-Mar-2026" → "2026-03-24"
+  try {
+    const months = { Jan:'01',Feb:'02',Mar:'03',Apr:'04',May:'05',Jun:'06',
+                     Jul:'07',Aug:'08',Sep:'09',Oct:'10',Nov:'11',Dec:'12' };
+    const [day, mon, year] = d.split('-');
+    if (months[mon]) return `${year}-${months[mon]}-${day.padStart(2,'0')}`;
+    return new Date(d).toISOString().split('T')[0];
+  } catch { return d; }
+}
+
+// Parse NSE JSON into same format as Upstox chain data
+function nse_parse_option_chain(nse_data, instrument_key) {
+  if (!nse_data) return { data: [], spot: 0, expiries: [] };
+
+  const lot    = LOT_SIZE[instrument_key] || 75;
+  const records = nse_data.records  || {};
+  const filtered= nse_data.filtered || {};
+
+  const spot = parseFloat(records.underlyingValue || filtered.underlyingValue || 0);
+  const expiries = (records.expiryDates || []).map(fmtDate);
+
+  const rows = filtered.data || records.data || [];
+  const byStrike = {};
+
+  for (const row of rows) {
+    const K   = parseFloat(row.strikePrice);
+    const exp = fmtDate(row.expiryDate || '');
+    const ce  = row.CE || {};
+    const pe  = row.PE || {};
+    if (!byStrike[K]) byStrike[K] = {};
+    if (!byStrike[K][exp]) byStrike[K][exp] = { ce, pe };
+  }
+
+  const data = [];
+  for (const K of Object.keys(byStrike).map(Number).sort((a,b)=>a-b)) {
+    const expData = byStrike[K];
+    if (!expData) continue;
+    const first = Object.keys(expData)[0];
+    const { ce, pe } = expData[first];
+
+    data.push({
+      strike_price: K,
+      call_options: {
+        instrument_key: ce.identifier || `NSE_FO|NIFTY${Math.round(K)}CE`,
+        market_data: {
+          ltp:         _s(ce, 'lastPrice'),
+          oi:          _s(ce, 'openInterest') * lot,
+          prev_oi:     _s(ce, 'pchangeinOpenInterest'),
+          volume:      _s(ce, 'totalTradedVolume'),
+          close_price: _s(ce, 'prevClose'),
+          lot_size:    lot,
+        },
+        option_greeks: {
+          iv:    _s(ce, 'impliedVolatility'),
+          delta: _s(ce, 'delta'),
+          theta: _s(ce, 'theta'),
+          gamma: _s(ce, 'gamma'),
+          vega:  _s(ce, 'vega'),
+        },
+      },
+      put_options: {
+        instrument_key: pe.identifier || `NSE_FO|NIFTY${Math.round(K)}PE`,
+        market_data: {
+          ltp:         _s(pe, 'lastPrice'),
+          oi:          _s(pe, 'openInterest') * lot,
+          prev_oi:     _s(pe, 'pchangeinOpenInterest'),
+          volume:      _s(pe, 'totalTradedVolume'),
+          close_price: _s(pe, 'prevClose'),
+          lot_size:    lot,
+        },
+        option_greeks: {
+          iv:    _s(pe, 'impliedVolatility'),
+          delta: _s(pe, 'delta'),
+          theta: _s(pe, 'theta'),
+          gamma: _s(pe, 'gamma'),
+          vega:  _s(pe, 'vega'),
+        },
+      },
+    });
+  }
+
+  return { data, spot, expiries };
+}
+
+// Fetch from NSE with fresh session (like Python _nse_session())
+async function nse_fetch_option_chain(sym) {
   const headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'application/json, text/plain, */*',
     'Accept-Language': 'en-US,en;q=0.9',
-    'Accept-Encoding': 'gzip, deflate, br',
     'Referer': 'https://www.nseindia.com/',
-    'Connection': 'keep-alive',
-    'sec-ch-ua': '"Chromium";v="124"',
-    'sec-fetch-dest': 'empty',
-    'sec-fetch-mode': 'cors',
-    'sec-fetch-site': 'same-origin',
   };
 
-  // Step 1: Main page cookies
+  // Fresh cookies
   const home = await fetch('https://www.nseindia.com', {
-    headers: { ...headers, Accept: 'text/html,application/xhtml+xml' },
+    headers: { ...headers, Accept: 'text/html,application/xhtml+xml' }
   });
-  const setCookie = home.headers.get('set-cookie') || '';
-  const cookieStr = setCookie.split(',').map(c => c.split(';')[0].trim()).join('; ');
+  const cookieRaw = home.headers.get('set-cookie') || '';
+  const cookies = cookieRaw.split(',').map(c => c.split(';')[0].trim()).filter(Boolean).join('; ');
 
-  // Step 2: Option chain page for more cookies
+  // Hit option chain page for extra cookies
   await fetch('https://www.nseindia.com/option-chain', {
-    headers: { ...headers, Cookie: cookieStr, Accept: 'text/html' },
+    headers: { ...headers, Cookie: cookies, Accept: 'text/html' }
   });
 
-  // Step 3: Fetch data
   const r = await fetch(
     `https://www.nseindia.com/api/option-chain-indices?symbol=${sym}`,
-    { headers: { ...headers, Cookie: cookieStr } }
+    { headers: { ...headers, Cookie: cookies } }
   );
   if (!r.ok) throw new Error(`NSE ${r.status}`);
   return r.json();
-}
-
-async function getYahooOptionChain(symbol, expiryDate) {
-  try {
-    // Yahoo Finance option chain
-    const url = `https://query1.finance.yahoo.com/v7/finance/options/${symbol}?date=${Math.floor(new Date(expiryDate).getTime() / 1000)}`;
-    const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-    const d = await r.json();
-    const result = d?.optionChain?.result?.[0];
-    if (!result) return null;
-
-    const spot = result.quote?.regularMarketPrice || 0;
-    const options = result.options?.[0];
-    if (!options) return null;
-
-    // Build strike map
-    const strikeMap = {};
-    for (const ce of (options.calls || [])) {
-      const K = ce.strike;
-      if (!strikeMap[K]) strikeMap[K] = { ce: {}, pe: {} };
-      strikeMap[K].ce = {
-        lastPrice: ce.lastPrice || 0,
-        impliedVolatility: (ce.impliedVolatility || 0) * 100,
-        openInterest: ce.openInterest || 0,
-        pchangeinOpenInterest: ce.percentChange || 0,
-        prevClose: ce.ask || 0,
-        identifier: `${symbol}${K}CE`,
-      };
-    }
-    for (const pe of (options.puts || [])) {
-      const K = pe.strike;
-      if (!strikeMap[K]) strikeMap[K] = { ce: {}, pe: {} };
-      strikeMap[K].pe = {
-        lastPrice: pe.lastPrice || 0,
-        impliedVolatility: (pe.impliedVolatility || 0) * 100,
-        openInterest: pe.openInterest || 0,
-        pchangeinOpenInterest: pe.percentChange || 0,
-        prevClose: pe.ask || 0,
-        identifier: `${symbol}${K}PE`,
-      };
-    }
-
-    // Convert to NSE-like format
-    const data = Object.entries(strikeMap).map(([K, v]) => ({
-      strikePrice: parseFloat(K),
-      CE: v.ce,
-      PE: v.pe,
-    }));
-
-    return {
-      source: 'yahoo',
-      nse_raw: {
-        records: {
-          underlyingValue: spot,
-          expiryDates: result.expiryDates?.map(ts => new Date(ts * 1000).toISOString().split('T')[0]) || [],
-          data,
-        },
-        filtered: { underlyingValue: spot, data },
-      }
-    };
-  } catch { return null; }
 }
 
 export default async function handler(req, res) {
@@ -122,15 +144,15 @@ export default async function handler(req, res) {
   if (!instrument_key || !expiry_date)
     return res.status(400).json({ error: 'Missing params' });
 
-  // BSE indices — not available on NSE
-  if (BSE_INDICES.includes(instrument_key)) {
-    return res.json({
-      source: 'unavailable', data: [],
-      message: 'BSE option chain not available via NSE API. Connect Upstox for live BSE data.',
-    });
+  // BSE — only via Upstox
+  if (instrument_key.startsWith('BSE_INDEX')) {
+    if (!token || token === 'MOCK_TOKEN') {
+      return res.json({ source: 'unavailable', data: [],
+        message: 'BSE option chain requires Upstox token. Go to Settings → Login with Upstox.' });
+    }
   }
 
-  // ── 1. Try Upstox ─────────────────────────────────────────────────────
+  // ── 1. Upstox API (exact same as Python api_get_option_chain) ─────────
   if (token && token !== 'MOCK_TOKEN') {
     try {
       const r = await fetch(
@@ -139,35 +161,43 @@ export default async function handler(req, res) {
       );
       if (r.ok) {
         const d = await r.json();
-        if (d.data?.length) return res.json({ source: 'upstox', data: d.data });
+        const data = d.data || [];
+        if (data.length > 0) {
+          console.log(`Upstox chain: ${data.length} strikes for ${instrument_key} ${expiry_date}`);
+          return res.json({ source: 'upstox', data });
+        }
+      } else {
+        console.error('Upstox chain error:', r.status, await r.text());
       }
-    } catch {}
-  }
-
-  // ── 2. Try NSE ────────────────────────────────────────────────────────
-  const sym = NSE_SYMBOL_MAP[instrument_key];
-  if (sym) {
-    try {
-      const d = await getNSEData(sym);
-      return res.json({ source: 'nse', nse_raw: d });
     } catch (e) {
-      console.error('NSE failed:', e.message);
-      // Fall through to Yahoo
+      console.error('Upstox chain exception:', e.message);
     }
   }
 
-  // ── 3. Yahoo Finance fallback ─────────────────────────────────────────
-  const yahooSym = YAHOO_OC_SYMBOL[instrument_key];
-  if (yahooSym) {
+  // ── 2. NSE API (same as Python nse_fetch_option_chain + nse_parse_option_chain) ──
+  const sym = NSE_SYMBOL[instrument_key];
+  if (sym) {
     try {
-      const result = await getYahooOptionChain(
-        yahooSym === 'NIFTY' ? '^NSEI' :
-        yahooSym === 'BANKNIFTY' ? '^NSEBANK' : `${yahooSym}.NS`,
-        expiry_date
-      );
-      if (result) return res.json(result);
-    } catch {}
+      const nse_raw = await nse_fetch_option_chain(sym);
+      const parsed = nse_parse_option_chain(nse_raw, instrument_key);
+      if (parsed.data.length > 0) {
+        console.log(`NSE chain: ${parsed.data.length} strikes`);
+        // Return in same Upstox format so frontend parses identically
+        return res.json({
+          source: 'upstox', // pretend upstox so frontend uses same parser
+          data: parsed.data,
+          spot: parsed.spot,
+          expiries: parsed.expiries,
+        });
+      }
+    } catch (e) {
+      console.error('NSE chain error:', e.message);
+    }
   }
 
-  return res.status(502).json({ error: 'All data sources failed. NSE may be blocking server requests. Please connect your Upstox token in Settings for reliable data.' });
+  return res.status(502).json({
+    error: 'Could not load option chain. Please ensure your Upstox token is valid (Settings → Login with Upstox).',
+    source: 'none',
+    data: [],
+  });
 }
