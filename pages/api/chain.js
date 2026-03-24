@@ -44,16 +44,33 @@ function nse_parse_option_chain(nse_data, instrument_key) {
   const spot = parseFloat(records.underlyingValue || filtered.underlyingValue || 0);
   const expiries = (records.expiryDates || []).map(fmtDate);
 
-  const rows = filtered.data || records.data || [];
-  const byStrike = {};
+  // Use records.data for ALL strikes, then overlay filtered.data for freshest near-ATM data
+  const allRows = records.data || [];
+  const filteredRows = filtered.data || [];
 
-  for (const row of rows) {
+  const byStrike = {};
+  for (const row of allRows) {
     const K   = parseFloat(row.strikePrice);
     const exp = fmtDate(row.expiryDate || '');
-    const ce  = row.CE || {};
-    const pe  = row.PE || {};
     if (!byStrike[K]) byStrike[K] = {};
-    if (!byStrike[K][exp]) byStrike[K][exp] = { ce, pe };
+    if (!byStrike[K][exp]) byStrike[K][exp] = { ce: row.CE || {}, pe: row.PE || {} };
+  }
+  // Overlay filtered.data (has more current IV/LTP for near-ATM strikes)
+  for (const row of filteredRows) {
+    const K   = parseFloat(row.strikePrice);
+    const exp = fmtDate(row.expiryDate || '');
+    if (!byStrike[K]) byStrike[K] = {};
+    if (!byStrike[K][exp]) {
+      byStrike[K][exp] = { ce: row.CE || {}, pe: row.PE || {} };
+    } else {
+      // Merge: prefer filtered data values when they are non-zero
+      const prev = byStrike[K][exp];
+      const fce = row.CE || {}, fpe = row.PE || {};
+      byStrike[K][exp] = {
+        ce: { ...prev.ce, ...Object.fromEntries(Object.entries(fce).filter(([,v]) => v !== undefined && v !== null && v !== 0 && v !== '')) },
+        pe: { ...prev.pe, ...Object.fromEntries(Object.entries(fpe).filter(([,v]) => v !== undefined && v !== null && v !== 0 && v !== '')) },
+      };
+    }
   }
 
   const data = [];
@@ -63,14 +80,25 @@ function nse_parse_option_chain(nse_data, instrument_key) {
     const first = Object.keys(expData)[0];
     const { ce, pe } = expData[first];
 
+    // Derive actual previous OI from current OI and % change
+    // NSE gives pchangeinOpenInterest as % (e.g. 12.5 means +12.5%)
+    // option-chain.js expects: (oi - prev_oi) / prev_oi * 100 = % change
+    const ceOI      = _s(ce, 'openInterest') * lot;
+    const ceOIChgPct = _s(ce, 'pchangeinOpenInterest');
+    const cePrevOI  = (ceOIChgPct !== 0 && ceOI > 0) ? ceOI / (1 + ceOIChgPct / 100) : ceOI;
+
+    const peOI      = _s(pe, 'openInterest') * lot;
+    const peOIChgPct = _s(pe, 'pchangeinOpenInterest');
+    const pePrevOI  = (peOIChgPct !== 0 && peOI > 0) ? peOI / (1 + peOIChgPct / 100) : peOI;
+
     data.push({
       strike_price: K,
       call_options: {
         instrument_key: ce.identifier || `NSE_FO|NIFTY${Math.round(K)}CE`,
         market_data: {
           ltp:         _s(ce, 'lastPrice'),
-          oi:          _s(ce, 'openInterest') * lot,
-          prev_oi:     _s(ce, 'pchangeinOpenInterest'),
+          oi:          ceOI,
+          prev_oi:     cePrevOI,
           volume:      _s(ce, 'totalTradedVolume'),
           close_price: _s(ce, 'prevClose'),
           lot_size:    lot,
@@ -87,8 +115,8 @@ function nse_parse_option_chain(nse_data, instrument_key) {
         instrument_key: pe.identifier || `NSE_FO|NIFTY${Math.round(K)}PE`,
         market_data: {
           ltp:         _s(pe, 'lastPrice'),
-          oi:          _s(pe, 'openInterest') * lot,
-          prev_oi:     _s(pe, 'pchangeinOpenInterest'),
+          oi:          peOI,
+          prev_oi:     pePrevOI,
           volume:      _s(pe, 'totalTradedVolume'),
           close_price: _s(pe, 'prevClose'),
           lot_size:    lot,

@@ -163,7 +163,8 @@ export default function OptionChain() {
           const c=item.call_options||{}, p=item.put_options||{};
           const cmd=c.market_data||{}, pmd=p.market_data||{};
           const cgk=c.option_greeks||{}, pgk=p.option_greeks||{};
-          const iv = v => { v=parseFloat(v)||0; return v<1 ? Math.round(v*10000)/100 : v; };
+          // IV normalisation: Upstox sends decimal (0.155 = 15.5%), NSE sends plain % (15.5)
+          const iv = v => { v = parseFloat(v) || 0; return v > 0 && v < 1 ? Math.round(v * 10000) / 100 : v; };
           return {
             strike:    parseInt(item.strike_price),
             c_key:     c.instrument_key||'',    p_key:     p.instrument_key||'',
