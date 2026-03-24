@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import Layout from '../components/Layout';
 import { useRouter } from 'next/router';
+import { decodeFeedResponse, extractTickUpdate } from './proto-decode';
 
 const INDEX_CONFIG = {
   NIFTY:      { instrument_key: 'NSE_INDEX|Nifty 50',           label: 'Nifty 50',     lot: 75,  gap: 50  },
@@ -222,23 +223,36 @@ export default function OptionChain() {
         };
         ws.onmessage = e => {
           try {
-            const msg = typeof e.data==='string'
-              ? JSON.parse(e.data)
-              : JSON.parse(new TextDecoder().decode(e.data));
-            const updates = {};
-            Object.entries(msg.feeds||{}).forEach(([k,f]) => {
-              const m = f?.ff?.marketFF || f?.ff?.indexFF || {};
-              const lp = m?.ltpc||{}, gk = m?.optionGreeks||{};
-              const ltp = parseFloat(lp.ltp||0);
-              if (ltp>0) updates[k] = {
-                ltp, oi: parseFloat(m.oi||0),
-                iv: parseFloat(gk.iv||0)*100,
-                delta: parseFloat(gk.delta||0),
-                theta: parseFloat(gk.theta||0),
-              };
-            });
-            if (Object.keys(updates).length) applyUpdates(updates);
-          } catch {}
+            let feeds = {};
+
+            if (typeof e.data === 'string') {
+              // JSON fallback (rare)
+              const msg = JSON.parse(e.data);
+              Object.entries(msg.feeds || {}).forEach(([k, f]) => {
+                const m = f?.ff?.marketFF || f?.ff?.indexFF || {};
+                const lp = m?.ltpc || {}, gk = m?.optionGreeks || {};
+                const ltp = parseFloat(lp.ltp || 0);
+                if (ltp > 0) feeds[k] = {
+                  ltp, oi: parseFloat(m.oi || 0),
+                  iv: parseFloat(gk.iv || 0) * 100,
+                  delta: parseFloat(gk.delta || 0),
+                  theta: parseFloat(gk.theta || 0),
+                };
+              });
+            } else {
+              // Binary protobuf — decode using MarketDataFeed.proto structure
+              const buffer = e.data instanceof ArrayBuffer ? e.data : e.data.buffer;
+              const decoded = decodeFeedResponse(new Uint8Array(buffer));
+              Object.entries(decoded.feeds || {}).forEach(([k, feed]) => {
+                const tick = extractTickUpdate(k, feed);
+                if (tick) feeds[k] = tick;
+              });
+            }
+
+            if (Object.keys(feeds).length) applyUpdates(feeds);
+          } catch(err) {
+            console.error('WS decode error:', err);
+          }
         };
         ws.onclose = () => {
           setWsLive(false);
