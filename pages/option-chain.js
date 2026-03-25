@@ -158,7 +158,7 @@ export default function OptionChain() {
 
       let parsed = [];
 
-      if (cd.source === 'upstox' && cd.data?.length) {
+      if ((cd.source === 'upstox' || cd.source === 'nse') && cd.data?.length) {
         parsed = cd.data.map(item => {
           const c=item.call_options||{}, p=item.put_options||{};
           const cmd=c.market_data||{}, pmd=p.market_data||{};
