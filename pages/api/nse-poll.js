@@ -19,7 +19,6 @@ export default async function handler(req, res) {
   };
 
   try {
-    // Fresh cookies every call (Vercel is stateless)
     const home = await fetch('https://www.nseindia.com', {
       headers: { ...headers, Accept: 'text/html' }
     });
@@ -35,9 +34,6 @@ export default async function handler(req, res) {
     const lot = LOT_SIZE[symbol] || 1;
     const rec = d.records || {}, fil = d.filtered || {};
     const spot = parseFloat(rec.underlyingValue || fil.underlyingValue || 0);
-    const expiries = (rec.expiryDates || []).map(e => {
-      try { return new Date(e).toISOString().split('T')[0]; } catch { return e; }
-    });
 
     const rows = (fil.data || rec.data || []).map(row => ({
       strike:   parseInt(row.strikePrice),
@@ -59,7 +55,7 @@ export default async function handler(req, res) {
       p_theta:  parseFloat(row.PE?.theta || 0),
     }));
 
-    return res.json({ spot, rows, expiries });
+    return res.json({ spot, rows });
   } catch (e) {
     return res.status(502).json({ error: e.message, spot: 0, rows: [] });
   }
