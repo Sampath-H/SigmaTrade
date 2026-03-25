@@ -1,5 +1,7 @@
 // pages/api/nse-poll.js — Fixed cookie handling
 const NSE_SUPPORTED = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY'];
+const LOT_SIZE = { NIFTY: 75, BANKNIFTY: 30, FINNIFTY: 65, MIDCPNIFTY: 120 };
+function cookieHeaderFromResponse(resp){const getSetCookie=resp?.headers?.getSetCookie;if(typeof getSetCookie==='function'){const arr=getSetCookie();if(Array.isArray(arr)&&arr.length)return arr.map(c=>c.split(';')[0].trim()).filter(Boolean).join('; ');}const raw=resp?.headers?.get('set-cookie')||'';if(!raw)return'';return raw.split(/,(?=[^;,]+=[^;,]+)/).map(c=>c.split(';')[0].trim()).filter(Boolean).join('; ');}
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
@@ -21,7 +23,7 @@ export default async function handler(req, res) {
     const home = await fetch('https://www.nseindia.com', {
       headers: { ...headers, Accept: 'text/html' }
     });
-    const cookies = home.headers.get('set-cookie') || '';
+    const cookies = cookieHeaderFromResponse(home);
 
     const r = await fetch(
       `https://www.nseindia.com/api/option-chain-indices?symbol=${symbol}`,
@@ -30,6 +32,7 @@ export default async function handler(req, res) {
     if (!r.ok) throw new Error(`NSE ${r.status}`);
 
     const d = await r.json();
+    const lot = LOT_SIZE[symbol] || 1;
     const rec = d.records || {}, fil = d.filtered || {};
     const spot = parseFloat(rec.underlyingValue || fil.underlyingValue || 0);
     const expiries = (rec.expiryDates || []).map(e => {
@@ -42,8 +45,8 @@ export default async function handler(req, res) {
       p_key:    row.PE?.identifier || '',
       c_ltp:    parseFloat(row.CE?.lastPrice || 0),
       p_ltp:    parseFloat(row.PE?.lastPrice || 0),
-      c_oi:     parseFloat(row.CE?.openInterest || 0),
-      p_oi:     parseFloat(row.PE?.openInterest || 0),
+      c_oi:     (parseFloat(row.CE?.openInterest || 0) * lot),
+      p_oi:     (parseFloat(row.PE?.openInterest || 0) * lot),
       c_iv:     parseFloat(row.CE?.impliedVolatility || 0),
       p_iv:     parseFloat(row.PE?.impliedVolatility || 0),
       c_oichg:  parseFloat(row.CE?.pchangeinOpenInterest || 0),
