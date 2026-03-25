@@ -30,6 +30,33 @@ function nse_parse_option_chain(nse_data,instrument_key,expiry_date){
   }
   return{data,spot,expiries};
 }
+
+function nse_rows_to_chain(rows,instrument_key){
+  const lot=LOT_SIZE[instrument_key]||75;
+  return (rows||[]).map(row=>{
+    const strike=parseFloat(row.strikePrice||row.strike||0);
+    const ce=row.CE||{}, pe=row.PE||{};
+    const ceOI=(_s(ce,'openInterest')||_s(row,'c_oi')/lot)*lot;
+    const peOI=(_s(pe,'openInterest')||_s(row,'p_oi')/lot)*lot;
+    const ceChg=_s(ce,'pchangeinOpenInterest')||_s(row,'c_oichg');
+    const peChg=_s(pe,'pchangeinOpenInterest')||_s(row,'p_oichg');
+    return {strike_price:strike,
+      call_options:{instrument_key:ce.identifier||row.c_key||'',market_data:{ltp:_s(ce,'lastPrice')||_s(row,'c_ltp'),oi:ceOI,prev_oi:(ceChg!==0&&ceOI>0)?ceOI/(1+ceChg/100):ceOI,volume:_s(ce,'totalTradedVolume'),close_price:_s(ce,'prevClose')||_s(row,'c_prev'),lot_size:lot},option_greeks:{iv:_s(ce,'impliedVolatility')||_s(row,'c_iv'),delta:_s(ce,'delta')||_s(row,'c_delta'),theta:_s(ce,'theta')||_s(row,'c_theta'),gamma:_s(ce,'gamma'),vega:_s(ce,'vega')}},
+      put_options:{instrument_key:pe.identifier||row.p_key||'',market_data:{ltp:_s(pe,'lastPrice')||_s(row,'p_ltp'),oi:peOI,prev_oi:(peChg!==0&&peOI>0)?peOI/(1+peChg/100):peOI,volume:_s(pe,'totalTradedVolume'),close_price:_s(pe,'prevClose')||_s(row,'p_prev'),lot_size:lot},option_greeks:{iv:_s(pe,'impliedVolatility')||_s(row,'p_iv'),delta:_s(pe,'delta')||_s(row,'p_delta'),theta:_s(pe,'theta')||_s(row,'p_theta'),gamma:_s(pe,'gamma'),vega:_s(pe,'vega')}};
+  }).filter(r=>r.strike_price>0);
+}
+
+async function nse_fetch_poll_rows(sym){
+  const h={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36','Accept':'application/json','Accept-Language':'en-US,en;q=0.9','Referer':'https://www.nseindia.com/option-chain'};
+  const home=await fetch('https://www.nseindia.com',{headers:{...h,Accept:'text/html'}});
+  const cookies=cookieHeaderFromResponse(home);
+  const r=await fetch(`https://www.nseindia.com/api/option-chain-indices?symbol=${sym}`,{headers:{...h,Cookie:cookies}});
+  if(!r.ok)throw new Error(`NSE poll ${r.status}`);
+  const d=await r.json();
+  const rec=d.records||{},fil=d.filtered||{};
+  return {spot:parseFloat(rec.underlyingValue||fil.underlyingValue||0),rows:(fil.data||rec.data||[])};
+}
+
 async function nse_fetch_option_chain(sym){
   const h={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36','Accept':'application/json, text/plain, */*','Accept-Language':'en-US,en;q=0.9','Referer':'https://www.nseindia.com/'};
   const home=await fetch('https://www.nseindia.com',{headers:{...h,Accept:'text/html,application/xhtml+xml'}});
@@ -58,7 +85,14 @@ export default async function handler(req,res){
       const nse_raw=await nse_fetch_option_chain(sym);
       const parsed=nse_parse_option_chain(nse_raw,instrument_key,expiry_date);
       if(parsed.data.length>0)return res.json({source:'nse',data:parsed.data,spot:parsed.spot,expiries:parsed.expiries});
-    }catch(e){console.error('NSE chain error:',e.message);}
+    }catch(e){
+      console.error('NSE chain error:',e.message);
+      try{
+        const fallback=await nse_fetch_poll_rows(sym);
+        const data=nse_rows_to_chain(fallback.rows,instrument_key);
+        if(data.length>0)return res.json({source:'nse',data,spot:fallback.spot,expiries:[expiry_date]});
+      }catch(e2){console.error('NSE poll fallback error:',e2.message);}
+    }
   }
   return res.status(502).json({error:'Could not load option chain.',source:'none',data:[]});
 }
